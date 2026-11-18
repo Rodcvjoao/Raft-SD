@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"labrpc"
 	"math"
 	"math/rand"
@@ -176,14 +175,38 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-type AppendEntriesArgs struct {
+func (rf *Raft) AppendEntry(args *AppendEntryArgs, reply *AppendEntryReply) {
+	rf.electionTime = time.Now()
+
+	reply.Term = rf.currentTerm
+}
+
+func (rf *Raft) sendAppendEntry(server int, args *AppendEntryArgs, reply *AppendEntryReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntry", args, reply)
+	return ok
+}
+
+func (rf *Raft) assertDominance() {
+	var args = AppendEntryArgs{}
+	args.Term = rf.currentTerm
+	args.LeaderId = rf.me
+	for {
+		for server := 0; server < len(rf.peers); server += 1 {
+			if server != rf.me {
+				var reply = AppendEntryReply{}
+				rf.sendAppendEntry(server, &args, &reply)
+			}
+		}
+	}
+}
+
+type AppendEntryArgs struct {
 	Term     int
 	LeaderId int
 }
 
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
+type AppendEntryReply struct {
+	Term int
 }
 
 func (rf *Raft) startElectionTimer() {
@@ -232,15 +255,14 @@ func (rf *Raft) runForElection() {
 		}(i, rf, &args, &qtdVotos, &electionWaitGroup)
 	}
 	electionWaitGroup.Wait()
-	fmt.Printf("Quantidade de votos %v\n", qtdVotos)
 
 	if float64(qtdVotos) > math.Ceil(float64(len(rf.peers))/2) {
 		rf.state = "Leader"
+		go rf.assertDominance()
 	} else {
 		rf.state = "Follower"
 		go rf.startElectionTimer()
 	}
-	fmt.Println(rf.state)
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
