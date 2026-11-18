@@ -20,7 +20,6 @@ package raft
 import (
 	"fmt"
 	"labrpc"
-	"math"
 	"math/rand"
 	"sync"
 	"time"
@@ -31,7 +30,7 @@ import (
 
 var alivePeers int = 0
 
-const timeoutEleicao time.Duration = 800
+const timeoutEleicao time.Duration = 1000
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -55,16 +54,17 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	//Estados persistentes
-	currentTerm int
-	votedFor    *int
+	CurrentTerm int
+	VotedFor    *int
 	logs        []ApplyMsg
 
 	//Estados volateis em todos os servidores
 	commitIndex  int
 	lastApplied  int
-	state        string
+	State        string
 	ElectionTime time.Time
 	dead         bool
+	BirthTime    time.Time
 
 	//Estados volateis em nós líderes (reinicializados após cada eleição)
 	nextIndex  []int
@@ -78,8 +78,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
-	term = rf.currentTerm
-	if rf.state == "Leader" {
+	term = rf.CurrentTerm
+	if rf.State == "Leader" {
 		isleader = true
 	} else {
 		isleader = false
@@ -134,17 +134,17 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	if rf.votedFor == nil || args.Term > rf.currentTerm || args.CandidateId == rf.me {
+	if rf.VotedFor == nil || args.Term > rf.CurrentTerm || args.CandidateId == rf.me {
 		if args.CandidateId != rf.me {
 			rf.ElectionTime = time.Now()
 		}
 		reply.VoteGranted = true
-		rf.votedFor = &args.CandidateId
-		rf.currentTerm = args.Term
-		reply.Term = rf.currentTerm
+		rf.VotedFor = &args.CandidateId
+		rf.CurrentTerm = args.Term
+		reply.Term = rf.CurrentTerm
 	} else {
-		fmt.Printf("NÓ %v Já votei em %v\n", rf.me, *rf.votedFor)
-		reply.Term = rf.currentTerm
+		fmt.Printf("NÓ %v --- Respondendo %v --- Já votei em %v\n", rf.me, args.CandidateId, *rf.VotedFor)
+		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 	}
 }
@@ -182,11 +182,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) AppendEntry(args *AppendEntryArgs, reply *AppendEntryReply) {
-	if args.Term >= rf.currentTerm {
+	if args.Term >= rf.CurrentTerm {
 		rf.ElectionTime = time.Now()
-		rf.currentTerm = args.Term
-		reply.Term = rf.currentTerm
-		rf.state = "Follower"
+		rf.CurrentTerm = args.Term
+		reply.Term = rf.CurrentTerm
+		//rf.State = "Follower"
+	} else {
+		reply.Term = rf.CurrentTerm
 	}
 }
 
@@ -197,28 +199,25 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntryArgs, reply *Append
 
 func (rf *Raft) assertDominance() {
 	var args = AppendEntryArgs{}
-	args.Term = rf.currentTerm
+	args.Term = rf.CurrentTerm
 	args.LeaderId = rf.me
-	for !rf.dead {
-		time.Sleep(200 * time.Millisecond)
+	for !rf.dead && rf.State == "Leader" {
 		for server := 0; server < len(rf.peers); server += 1 {
 			if server == rf.me {
 				continue
 			}
 			var reply = AppendEntryReply{}
-			alive := rf.sendAppendEntry(server, &args, &reply)
-			if alive {
-				fmt.Printf("Lider %v --- TermoLider %v --- TermoReply %v --- Servidor %v\n", rf.me, rf.currentTerm, reply.Term, server)
-			} else {
-				fmt.Printf("Lider %v --- TermoLider %v --- TermoReply %v --- Servidor %v\n", rf.me, rf.currentTerm, reply.Term, server)
-			}
-			if reply.Term > rf.currentTerm {
-				rf.state = "Follower"
-				rf.currentTerm = reply.Term
+			rf.sendAppendEntry(server, &args, &reply)
+			//fmt.Printf("Lider %v --- TermoLider %v --- TermoReply %v --- Servidor %v\n", rf.me, rf.CurrentTerm, reply.Term, server)
+			if reply.Term > rf.CurrentTerm {
+				fmt.Printf("============================EU(%v) VIREI UM SEGUIDOR========================\n", rf.me)
+				rf.State = "Follower"
+				rf.CurrentTerm = reply.Term
 				rf.startElectionTimer()
 				return
 			}
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -238,63 +237,75 @@ func (rf *Raft) startElectionTimer() {
 		//SE DER O TEMPO DA ELEIÇÃO...
 		time.Sleep(20 * time.Millisecond)
 		if time.Now().Sub(rf.ElectionTime) >= timeoutEleicao*time.Millisecond {
-			break
+			fmt.Printf("Tempo de espera do %v = %v\n", rf.me, time.Now().Sub(rf.BirthTime))
+			if time.Now().Sub(rf.ElectionTime) >= timeoutEleicao*time.Millisecond {
+				fmt.Printf("%v concorrerá a eleicao\n", rf.me)
+				rf.runForElection()
+			}
 		}
 	}
-
-	rf.mu.Lock()
-	fmt.Printf("Tempo de espera do %v = %v\n", rf.me, time.Now().Sub(rf.ElectionTime))
-	if time.Now().Sub(rf.ElectionTime) >= timeoutEleicao*time.Millisecond {
-		fmt.Printf("%v concorrerá a eleicao\n", rf.me)
-		rf.runForElection()
-	}
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) runForElection() {
 	// Atualizamos o termo pois ele está enviando o pedido de voto e mudamos o estado
-	rf.currentTerm = rf.currentTerm + 1
-	rf.state = "Candidate"
+	rf.mu.Lock()
+	rf.CurrentTerm = rf.CurrentTerm + 1
+	rf.State = "Candidate"
 
 	// Adicionando valores ao argumento passado pelo RPC
 	args := RequestVoteArgs{}
 	args.CandidateId = rf.me
-	args.Term = rf.currentTerm
+	args.Term = rf.CurrentTerm
 
-	qtdVotos := 0
-	votosValidos := 0
+	rf.VotedFor = &rf.me
+	qtdVotos := 1
+	votosValidos := 1
 
 	var electionWaitGroup = sync.WaitGroup{}
 
 	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
 		electionWaitGroup.Add(1)
 		go func(rfIndex int, rf *Raft, args *RequestVoteArgs, qtdVotos *int, votosValidos *int, wg *sync.WaitGroup) {
 			// Criando a estrutura que será utilizada para passagem dos parâmetros
-			fmt.Printf("Nó a votar = %v\n", rfIndex)
+			fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó a votar = %v\n", rf.me, rf.CurrentTerm, rfIndex)
 			reply := RequestVoteReply{}
+			defer wg.Done()
 			okReply := rf.sendRequestVote(rfIndex, args, &reply)
 			if okReply == true && reply.VoteGranted == true {
 				*votosValidos += 1
 				*qtdVotos += 1
-				fmt.Printf("Nó votante = %v\n", rfIndex)
+				fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó votante = %v (termo nó %v)\n", rf.me, rf.CurrentTerm, rfIndex, reply.Term)
+				if float64(*qtdVotos) > float64(len(rf.peers))/2 {
+					rf.State = "Leader"
+					fmt.Printf("Nó %v teve votos suficientes para se tornar líder\n", rf.me)
+					rf.assertDominance()
+					return
+				}
 			}
 			if okReply == true && reply.VoteGranted == false {
-				fmt.Printf("Nó opositor %v\n", rfIndex)
+				fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó opositor %v (termo nó %v)\n", rf.me, rf.CurrentTerm, rfIndex, reply.Term)
 				*votosValidos += 1
+			} else if okReply == false {
+				fmt.Printf("Servidor %v não retornou resposta válida\n", rfIndex)
 			}
-			wg.Done()
 		}(i, rf, &args, &qtdVotos, &votosValidos, &electionWaitGroup)
 	}
 	electionWaitGroup.Wait()
 	fmt.Printf("Quantidade de votos recebidos por %v = %v (total de peers ativos %v)\n", rf.me, qtdVotos, votosValidos)
 
-	if float64(qtdVotos) >= math.Ceil(float64(alivePeers)/2) {
-		rf.state = "Leader"
-		go rf.assertDominance()
-	} else {
-		rf.state = "Follower"
-		go rf.startElectionTimer()
+	if rf.State != "Leader" {
+		if float64(qtdVotos) > float64(len(rf.peers))/2 {
+			rf.State = "Leader"
+			rf.assertDominance()
+		} else {
+			rf.State = "Follower"
+			go rf.startElectionTimer()
+		}
 	}
+	rf.mu.Unlock()
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -343,10 +354,11 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.me = me               //O índice deste peer no slice de peers
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.currentTerm = 0
-	rf.votedFor = nil
-	rf.state = "Follower"
+	rf.CurrentTerm = 0
+	rf.VotedFor = nil
+	rf.State = "Follower"
 	alivePeers += 1
+	rf.BirthTime = time.Now()
 	go rf.startElectionTimer()
 
 	// initialize from state persisted before a crash
