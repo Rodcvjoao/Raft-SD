@@ -31,7 +31,7 @@ import (
 
 var alivePeers int = 0
 
-const tempoEleicao time.Duration = 800
+const timeoutEleicao time.Duration = 800
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -63,7 +63,7 @@ type Raft struct {
 	commitIndex  int
 	lastApplied  int
 	state        string
-	electionTime time.Time
+	ElectionTime time.Time
 	dead         bool
 
 	//Estados volateis em nós líderes (reinicializados após cada eleição)
@@ -135,7 +135,9 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	if rf.votedFor == nil || args.Term > rf.currentTerm || args.CandidateId == rf.me {
-		rf.electionTime = time.Now()
+		if args.CandidateId != rf.me {
+			rf.ElectionTime = time.Now()
+		}
 		reply.VoteGranted = true
 		rf.votedFor = &args.CandidateId
 		rf.currentTerm = args.Term
@@ -181,7 +183,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) AppendEntry(args *AppendEntryArgs, reply *AppendEntryReply) {
 	if args.Term >= rf.currentTerm {
-		rf.electionTime = time.Now()
+		rf.ElectionTime = time.Now()
 		rf.currentTerm = args.Term
 		reply.Term = rf.currentTerm
 		rf.state = "Follower"
@@ -231,17 +233,18 @@ type AppendEntryReply struct {
 
 func (rf *Raft) startElectionTimer() {
 	time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
-	rf.electionTime = time.Now()
+	rf.ElectionTime = time.Now()
 	for !rf.dead {
 		//SE DER O TEMPO DA ELEIÇÃO...
-		time.Sleep(50 * time.Millisecond)
-		if time.Now().Sub(rf.electionTime) >= tempoEleicao*time.Millisecond {
+		time.Sleep(20 * time.Millisecond)
+		if time.Now().Sub(rf.ElectionTime) >= timeoutEleicao*time.Millisecond {
 			break
 		}
 	}
 
 	rf.mu.Lock()
-	if time.Now().Sub(rf.electionTime) >= tempoEleicao*time.Millisecond {
+	fmt.Printf("Tempo de espera do %v = %v\n", rf.me, time.Now().Sub(rf.ElectionTime))
+	if time.Now().Sub(rf.ElectionTime) >= timeoutEleicao*time.Millisecond {
 		fmt.Printf("%v concorrerá a eleicao\n", rf.me)
 		rf.runForElection()
 	}
