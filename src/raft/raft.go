@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"labrpc"
 	"math"
 	"math/rand"
@@ -27,6 +28,10 @@ import (
 
 // import "bytes"
 // import "encoding/gob"
+
+var alivePeers int = 0
+
+const tempoEleicao time.Duration = 800
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -59,6 +64,7 @@ type Raft struct {
 	lastApplied  int
 	state        string
 	electionTime time.Time
+	dead         bool
 
 	//Estados volateis em nós líderes (reinicializados após cada eleição)
 	nextIndex  []int
@@ -128,17 +134,15 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	rf.electionTime = time.Now()
-
-	if rf.votedFor == nil {
+	if rf.votedFor == nil || args.Term > rf.currentTerm || args.CandidateId == rf.me {
+		rf.electionTime = time.Now()
 		reply.VoteGranted = true
-		rf.currentTerm = args.Term
-		reply.Term = rf.currentTerm
-	} else if args.Term > rf.currentTerm {
-		reply.VoteGranted = true
+		rf.votedFor = &args.CandidateId
 		rf.currentTerm = args.Term
 		reply.Term = rf.currentTerm
 	} else {
+		fmt.Printf("NÓ %v Já votei em %v\n", rf.me, *rf.votedFor)
+		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	}
 }
@@ -176,9 +180,12 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) AppendEntry(args *AppendEntryArgs, reply *AppendEntryReply) {
-	rf.electionTime = time.Now()
-
-	reply.Term = rf.currentTerm
+	if args.Term >= rf.currentTerm {
+		rf.electionTime = time.Now()
+		rf.currentTerm = args.Term
+		reply.Term = rf.currentTerm
+		rf.state = "Follower"
+	}
 }
 
 func (rf *Raft) sendAppendEntry(server int, args *AppendEntryArgs, reply *AppendEntryReply) bool {
@@ -190,11 +197,24 @@ func (rf *Raft) assertDominance() {
 	var args = AppendEntryArgs{}
 	args.Term = rf.currentTerm
 	args.LeaderId = rf.me
-	for {
+	for !rf.dead {
+		time.Sleep(200 * time.Millisecond)
 		for server := 0; server < len(rf.peers); server += 1 {
-			if server != rf.me {
-				var reply = AppendEntryReply{}
-				rf.sendAppendEntry(server, &args, &reply)
+			if server == rf.me {
+				continue
+			}
+			var reply = AppendEntryReply{}
+			alive := rf.sendAppendEntry(server, &args, &reply)
+			if alive {
+				fmt.Printf("Lider %v --- TermoLider %v --- TermoReply %v --- Servidor %v\n", rf.me, rf.currentTerm, reply.Term, server)
+			} else {
+				fmt.Printf("Lider %v --- TermoLider %v --- TermoReply %v --- Servidor %v\n", rf.me, rf.currentTerm, reply.Term, server)
+			}
+			if reply.Term > rf.currentTerm {
+				rf.state = "Follower"
+				rf.currentTerm = reply.Term
+				rf.startElectionTimer()
+				return
 			}
 		}
 	}
@@ -212,19 +232,20 @@ type AppendEntryReply struct {
 func (rf *Raft) startElectionTimer() {
 	time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 	rf.electionTime = time.Now()
-	var mutex = sync.Mutex{}
-	for {
+	for !rf.dead {
 		//SE DER O TEMPO DA ELEIÇÃO...
-		if time.Now().Sub(rf.electionTime) >= 1000*time.Millisecond {
+		time.Sleep(50 * time.Millisecond)
+		if time.Now().Sub(rf.electionTime) >= tempoEleicao*time.Millisecond {
 			break
 		}
 	}
 
-	mutex.Lock()
-	if time.Now().Sub(rf.electionTime) >= 1000*time.Millisecond {
+	rf.mu.Lock()
+	if time.Now().Sub(rf.electionTime) >= tempoEleicao*time.Millisecond {
+		fmt.Printf("%v concorrerá a eleicao\n", rf.me)
 		rf.runForElection()
 	}
-	mutex.Unlock()
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) runForElection() {
@@ -238,25 +259,33 @@ func (rf *Raft) runForElection() {
 	args.Term = rf.currentTerm
 
 	qtdVotos := 0
+	votosValidos := 0
 
 	var electionWaitGroup = sync.WaitGroup{}
 
 	for i := 0; i < len(rf.peers); i++ {
 		electionWaitGroup.Add(1)
-		go func(rfIndex int, rf *Raft, args *RequestVoteArgs, qtdVotos *int, wg *sync.WaitGroup) {
+		go func(rfIndex int, rf *Raft, args *RequestVoteArgs, qtdVotos *int, votosValidos *int, wg *sync.WaitGroup) {
 			// Criando a estrutura que será utilizada para passagem dos parâmetros
+			fmt.Printf("Nó a votar = %v\n", rfIndex)
 			reply := RequestVoteReply{}
-			if rf.sendRequestVote(i, args, &reply) == true {
-				if reply.VoteGranted == true {
-					*qtdVotos += 1
-				}
+			okReply := rf.sendRequestVote(rfIndex, args, &reply)
+			if okReply == true && reply.VoteGranted == true {
+				*votosValidos += 1
+				*qtdVotos += 1
+				fmt.Printf("Nó votante = %v\n", rfIndex)
+			}
+			if okReply == true && reply.VoteGranted == false {
+				fmt.Printf("Nó opositor %v\n", rfIndex)
+				*votosValidos += 1
 			}
 			wg.Done()
-		}(i, rf, &args, &qtdVotos, &electionWaitGroup)
+		}(i, rf, &args, &qtdVotos, &votosValidos, &electionWaitGroup)
 	}
 	electionWaitGroup.Wait()
+	fmt.Printf("Quantidade de votos recebidos por %v = %v (total de peers ativos %v)\n", rf.me, qtdVotos, votosValidos)
 
-	if float64(qtdVotos) > math.Ceil(float64(len(rf.peers))/2) {
+	if float64(qtdVotos) >= math.Ceil(float64(alivePeers)/2) {
 		rf.state = "Leader"
 		go rf.assertDominance()
 	} else {
@@ -291,7 +320,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // in Kill(), but it might be convenient to (for example)
 // turn off debug output from this instance.
 func (rf *Raft) Kill() {
-	// Your code here, if desired.
+	rf.dead = true
+	alivePeers -= 1
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -313,6 +343,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.currentTerm = 0
 	rf.votedFor = nil
 	rf.state = "Follower"
+	alivePeers += 1
 	go rf.startElectionTimer()
 
 	// initialize from state persisted before a crash
