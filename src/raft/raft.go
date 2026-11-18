@@ -18,7 +18,9 @@ package raft
 //
 
 import (
+	"fmt"
 	"labrpc"
+	"math"
 	"math/rand"
 	"sync"
 	"time"
@@ -184,44 +186,61 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-func (rf *Raft) startElectionTimer(server *Raft) {
+func (rf *Raft) startElectionTimer() {
 	time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
-	server.electionTime = time.Now()
-
-	//SE DER O TEMPO DA ELEIÇÃO...
-	if time.Now().Sub(server.electionTime) >= 1000*time.Millisecond {
-		// Atualizamos o termo pois ele está enviando o pedido de voto e mudamos o estado
-		server.currentTerm = server.currentTerm + 1
-		server.state = "Candidate"
-
-		// Adicionando valores ao argumento passado pelo RPC
-		args := RequestVoteArgs{}
-		args.CandidateId = server.me
-		args.Term = server.currentTerm
-
-		qtdVotos := 0
-
-		for i := 0; i < len(server.peers); i++ {
-			go func(serverIndex int, server *Raft, args *RequestVoteArgs, qtdVotos *int) {
-				// Criando a estrutura que será utilizada para passagem dos parâmetros
-				reply := RequestVoteReply{}
-				if server.sendRequestVote(i, args, &reply) == true {
-					if args.Term < reply.Term {
-						reply.VoteGranted = false
-					} else {
-						reply.VoteGranted = true
-						*qtdVotos += 1
-					}
-				}
-			}(i, server, &args, &qtdVotos)
-		}
-
-		if qtdVotos > len(rf.peers) {
-			rf.state = "Leader"
-		} else {
-			rf.state = "Follower"
+	rf.electionTime = time.Now()
+	var mutex = sync.Mutex{}
+	for {
+		//SE DER O TEMPO DA ELEIÇÃO...
+		if time.Now().Sub(rf.electionTime) >= 1000*time.Millisecond {
+			break
 		}
 	}
+
+	mutex.Lock()
+	if time.Now().Sub(rf.electionTime) >= 1000*time.Millisecond {
+		rf.runForElection()
+	}
+	mutex.Unlock()
+}
+
+func (rf *Raft) runForElection() {
+	// Atualizamos o termo pois ele está enviando o pedido de voto e mudamos o estado
+	rf.currentTerm = rf.currentTerm + 1
+	rf.state = "Candidate"
+
+	// Adicionando valores ao argumento passado pelo RPC
+	args := RequestVoteArgs{}
+	args.CandidateId = rf.me
+	args.Term = rf.currentTerm
+
+	qtdVotos := 0
+
+	var electionWaitGroup = sync.WaitGroup{}
+
+	for i := 0; i < len(rf.peers); i++ {
+		electionWaitGroup.Add(1)
+		go func(rfIndex int, rf *Raft, args *RequestVoteArgs, qtdVotos *int, wg *sync.WaitGroup) {
+			// Criando a estrutura que será utilizada para passagem dos parâmetros
+			reply := RequestVoteReply{}
+			if rf.sendRequestVote(i, args, &reply) == true {
+				if reply.VoteGranted == true {
+					*qtdVotos += 1
+				}
+			}
+			wg.Done()
+		}(i, rf, &args, &qtdVotos, &electionWaitGroup)
+	}
+	electionWaitGroup.Wait()
+	fmt.Printf("Quantidade de votos %v\n", qtdVotos)
+
+	if float64(qtdVotos) > math.Ceil(float64(len(rf.peers))/2) {
+		rf.state = "Leader"
+	} else {
+		rf.state = "Follower"
+		go rf.startElectionTimer()
+	}
+	fmt.Println(rf.state)
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -272,7 +291,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.currentTerm = 0
 	rf.votedFor = nil
 	rf.state = "Follower"
-	go rf.startElectionTimer(rf)
+	go rf.startElectionTimer()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
