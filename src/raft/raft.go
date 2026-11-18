@@ -19,7 +19,9 @@ package raft
 
 import (
 	"labrpc"
+	"math/rand"
 	"sync"
+	"time"
 )
 
 // import "bytes"
@@ -52,9 +54,10 @@ type Raft struct {
 	logs        []ApplyMsg
 
 	//Estados volateis em todos os servidores
-	commitIndex int
-	lastApplied int
-	state       string
+	commitIndex  int
+	lastApplied  int
+	state        string
+	electionTime time.Time
 
 	//Estados volateis em nós líderes (reinicializados após cada eleição)
 	nextIndex  []int
@@ -124,35 +127,18 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	// Aqui imagino que o RequestVote será mandado para todos os peers in rf.peers[] pelo líder,
-	// uma vez que o pedido de voto feito pelo líder é mandado em broadcast
+	rf.electionTime = time.Now()
 
-	// Atualizamos o termo pois ele está enviando o pedido de voto
-	rf.currentTerm = rf.currentTerm + 1
-
-	// Adicionando valores ao argumento passado pelo RPC
-	args.CandidateId = rf.me
-	args.Term = rf.currentTerm
-
-	qtdVotos := 0
-	rf.state = "Candidate"
-
-	for i := 0; i < len(rf.peers); i++ {
-		if rf.sendRequestVote(i, args, reply) == true {
-			if args.Term < reply.Term {
-				reply.VoteGranted = false
-				break
-			} else {
-				reply.VoteGranted = true
-				qtdVotos += 1
-			}
-		}
-	}
-
-	if qtdVotos > len(rf.peers) {
-		rf.state = "Leader"
+	if rf.votedFor == nil {
+		reply.VoteGranted = true
+		rf.currentTerm = args.Term
+		reply.Term = rf.currentTerm
+	} else if args.Term > rf.currentTerm {
+		reply.VoteGranted = true
+		rf.currentTerm = args.Term
+		reply.Term = rf.currentTerm
 	} else {
-		rf.state = "Follower"
+		reply.VoteGranted = false
 	}
 }
 
@@ -186,6 +172,56 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
+}
+
+type AppendEntriesArgs struct {
+	Term     int
+	LeaderId int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) startElectionTimer(server *Raft) {
+	time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+	server.electionTime = time.Now()
+
+	//SE DER O TEMPO DA ELEIÇÃO...
+	if time.Now().Sub(server.electionTime) >= 1000*time.Millisecond {
+		// Atualizamos o termo pois ele está enviando o pedido de voto e mudamos o estado
+		server.currentTerm = server.currentTerm + 1
+		server.state = "Candidate"
+
+		// Adicionando valores ao argumento passado pelo RPC
+		args := RequestVoteArgs{}
+		args.CandidateId = server.me
+		args.Term = server.currentTerm
+
+		qtdVotos := 0
+
+		for i := 0; i < len(server.peers); i++ {
+			go func(serverIndex int, server *Raft, args *RequestVoteArgs, qtdVotos *int) {
+				// Criando a estrutura que será utilizada para passagem dos parâmetros
+				reply := RequestVoteReply{}
+				if server.sendRequestVote(i, args, &reply) == true {
+					if args.Term < reply.Term {
+						reply.VoteGranted = false
+					} else {
+						reply.VoteGranted = true
+						*qtdVotos += 1
+					}
+				}
+			}(i, server, &args, &qtdVotos)
+		}
+
+		if qtdVotos > len(rf.peers) {
+			rf.state = "Leader"
+		} else {
+			rf.state = "Follower"
+		}
+	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -236,6 +272,8 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.currentTerm = 0
 	rf.votedFor = nil
 	rf.state = "Follower"
+	go rf.startElectionTimer(rf)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
