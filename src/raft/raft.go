@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -86,7 +85,7 @@ func (rf *Raft) GetState() (int, bool) {
 	} else {
 		isleader = false
 	}
-	fmt.Printf("servidor %v é líder? %v\n", rf.me, isleader)
+	//fmt.Printf("servidor %v é líder? %v\n", rf.me, isleader)
 	return term, isleader
 }
 
@@ -147,7 +146,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.CurrentTerm
 		rf.State = "Follower"
 	} else {
-		fmt.Printf("NÓ %v --- Respondendo %v --- Já votei em %v\n", rf.me, args.CandidateId, *rf.VotedFor)
+		//fmt.Printf("NÓ %v --- Respondendo %v --- Já votei em %v\n", rf.me, args.CandidateId, *rf.VotedFor)
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 	}
@@ -216,14 +215,14 @@ func (rf *Raft) assertDominance() {
 			var reply = AppendEntryReply{}
 			liderConectado := rf.sendAppendEntry(server, &args, &reply)
 			if !liderConectado {
-				fmt.Printf("LÍDER(%v) DESCONECTADOOOOOOOOOOOOOOOOOOOOOOO\n", rf.me)
+				//fmt.Printf("LÍDER(%v) DESCONECTADOOOOOOOOOOOOOOOOOOOOOOO\n", rf.me)
 				rf.State = "Follower"
 				go rf.startElectionTimer()
 				return
 			}
-			fmt.Printf("Lider %v --- TermoLider %v --- TermoReply %v --- Servidor %v\n", rf.me, rf.CurrentTerm, reply.Term, server)
+			//fmt.Printf("Lider %v --- TermoLider %v --- TermoReply %v --- Servidor %v\n", rf.me, rf.CurrentTerm, reply.Term, server)
 			if reply.Term > rf.CurrentTerm {
-				fmt.Printf("============================EU(%v) VIREI UM SEGUIDOR========================\n", rf.me)
+				//fmt.Printf("============================EU(%v) VIREI UM SEGUIDOR========================\n", rf.me)
 				rf.State = "Follower"
 				rf.CurrentTerm = reply.Term
 				go rf.startElectionTimer()
@@ -250,9 +249,9 @@ func (rf *Raft) startElectionTimer() {
 		//SE DER O TEMPO DA ELEIÇÃO...
 		time.Sleep(20 * time.Millisecond)
 		if time.Now().Sub(rf.ElectionTime) >= timeoutEleicao*time.Millisecond {
-			fmt.Printf("Tempo de espera do %v = %v\n", rf.me, time.Now().Sub(BirthTime))
+			//fmt.Printf("Tempo de espera do %v = %v\n", rf.me, time.Now().Sub(BirthTime))
 			if time.Now().Sub(rf.ElectionTime) >= timeoutEleicao*time.Millisecond {
-				fmt.Printf("%v concorrerá a eleicao\n", rf.me)
+				//fmt.Printf("%v concorrerá a eleicao\n", rf.me)
 				rf.runForElection()
 			}
 		}
@@ -283,30 +282,30 @@ func (rf *Raft) runForElection() {
 		//electionWaitGroup.Add(1)
 		go func(rfIndex int, rf *Raft, args *RequestVoteArgs, qtdVotos *int, votosValidos *int, wg *sync.WaitGroup) {
 			// Criando a estrutura que será utilizada para passagem dos parâmetros
-			fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó a votar = %v\n", rf.me, rf.CurrentTerm, rfIndex)
+			//fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó a votar = %v\n", rf.me, rf.CurrentTerm, rfIndex)
 			reply := RequestVoteReply{}
 			okReply := rf.sendRequestVote(rfIndex, args, &reply)
 			if okReply == true && reply.VoteGranted == true {
 				*votosValidos += 1
 				*qtdVotos += 1
-				fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó votante = %v (termo nó %v)\n", rf.me, rf.CurrentTerm, rfIndex, reply.Term)
+				//fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó votante = %v (termo nó %v)\n", rf.me, rf.CurrentTerm, rfIndex, reply.Term)
 				if float64(*qtdVotos) > float64(len(rf.peers))/2 {
 					rf.State = "Leader"
-					fmt.Printf("Nó %v teve votos suficientes para se tornar líder\n", rf.me)
+					//fmt.Printf("Nó %v teve votos suficientes para se tornar líder\n", rf.me)
 					rf.assertDominance()
 				}
 			}
 			if okReply == true && reply.VoteGranted == false {
-				fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó opositor %v (termo nó %v)\n", rf.me, rf.CurrentTerm, rfIndex, reply.Term)
+				//fmt.Printf("Eleicao de %v (termo líder = %v) --- Nó opositor %v (termo nó %v)\n", rf.me, rf.CurrentTerm, rfIndex, reply.Term)
 				*votosValidos += 1
 			} else if okReply == false {
-				fmt.Printf("Servidor %v não retornou resposta válida\n", rfIndex)
+				//fmt.Printf("Servidor %v não retornou resposta válida\n", rfIndex)
 			}
 			//wg.Done()
 		}(i, rf, &args, &qtdVotos, &votosValidos, &electionWaitGroup)
 	}
 	//electionWaitGroup.Wait()
-	fmt.Printf("Quantidade de votos recebidos por %v = %v (total de peers ativos %v)\n", rf.me, qtdVotos, votosValidos)
+	//fmt.Printf("Quantidade de votos recebidos por %v = %v (total de peers ativos %v)\n", rf.me, qtdVotos, votosValidos)
 
 	if rf.State != "Leader" {
 		if float64(qtdVotos) > float64(len(rf.peers))/2 {
