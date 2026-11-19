@@ -243,7 +243,7 @@ type AppendEntryReply struct {
 }
 
 func (rf *Raft) startElectionTimer() {
-	time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+	time.Sleep(time.Duration(rand.Intn(250)) * time.Millisecond)
 	rf.ElectionTime = time.Now()
 	for !rf.dead && rf.State != "Leader" {
 		//SE DER O TEMPO DA ELEIÇÃO...
